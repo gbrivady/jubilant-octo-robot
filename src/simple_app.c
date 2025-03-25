@@ -12,12 +12,16 @@
 #define WINDOW_HEIGHT 300
 
 #ifdef DEBUG
-const bool ENABLE_VALIDATION_LAYERS = true;
-const uint32_t NB_VALIDATION_LAYERS = 1;
-const char* VALIDATION_LAYERS[1] = {"VK_LAYER_KHRONOS_validation"};
+#define ENABLE_VALIDATION_LAYERS true
+#define NB_VALIDATION_LAYERS 1
+const char* VALIDATION_LAYERS[NB_VALIDATION_LAYERS] = {"VK_LAYER_KHRONOS_validation"};
 #else
-const bool ENABLE_VALIDATION_LAYERS = false;
+#define ENABLE_VALIDATION_LAYERS false
 #endif
+
+#define NB_REQUIRED_DEVICE_EXTENSIONS 1
+const char* REQUIRED_DEVICE_EXTENSIONS[NB_REQUIRED_DEVICE_EXTENSIONS] = {
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
 #define QUEUE_FAMILY_COUNT 2
 struct QueueFamilyIndices {
@@ -55,6 +59,16 @@ bool is_queue_family_complete(QueueFamilyIndices q) {
     return q.graphics_family_found && q.present_family_found;
 }
 
+struct SwapchainSupportDetails {
+    VkSurfaceCapabilitiesKHR capabilities;
+
+    uint32_t format_count;
+    VkSurfaceFormatKHR* formats;
+
+    uint32_t present_mode_count;
+    VkPresentModeKHR* present_modes;
+} typedef SwapchainSupportDetails;
+
 struct SimpleVkApp {
     GLFWwindow* window;
     VkInstance instance;
@@ -68,6 +82,13 @@ struct SimpleVkApp {
     VkQueue present_queue;
 
     VkSurfaceKHR surface;
+
+    /* swapchain stuff */
+    VkSwapchainKHR swapchain;
+    uint32_t image_count;
+    VkImage* swapchain_images;
+    VkFormat swapchain_image_format;
+    VkExtent2D swapchain_extent;
 
 } typedef SimpleVkApp;
 
@@ -93,6 +114,78 @@ QueueFamilyIndices find_queue_families(SimpleVkApp* app, VkPhysicalDevice device
         }
     }
     return indices;
+}
+
+// WARNING: allocates memory when creating struct
+SwapchainSupportDetails query_swapchain_support(SimpleVkApp* app, VkPhysicalDevice device) {
+    SwapchainSupportDetails details = {0};
+
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, app->surface, &(details.capabilities));
+
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, app->surface, &(details.format_count), NULL);
+    if(details.format_count != 0) {
+        details.formats = calloc(details.format_count, sizeof(VkSurfaceFormatKHR));
+    }
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, app->surface, &(details.format_count),
+                                         details.formats);
+
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, app->surface, &(details.present_mode_count),
+                                              NULL);
+    if(details.present_mode_count != 0) {
+        details.present_modes = calloc(details.present_mode_count, sizeof(VkPresentModeKHR));
+    }
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, app->surface, &(details.present_mode_count),
+                                              details.present_modes);
+
+    return details;
+}
+
+VkSurfaceFormatKHR choose_swap_surface_format(uint32_t available_format_count,
+                                              const VkSurfaceFormatKHR* available_formats) {
+    for(uint32_t i = 0; i < available_format_count; i++) {
+        if(available_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+           available_formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            return available_formats[i];
+        }
+    }
+
+    return available_formats[0];
+}
+
+VkPresentModeKHR choose_swap_present_mode(uint32_t available_present_mode_count,
+                                          VkPresentModeKHR* available_present_modes) {
+    for(uint32_t i = 0; i < available_present_mode_count; i++) {
+        if(available_present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+            return VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+    }
+
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+// Resolution of the swap chain image
+VkExtent2D choose_swap_extent(SimpleVkApp* app, VkSurfaceCapabilitiesKHR* capabilities) {
+    if(capabilities->currentExtent.width != UINT32_MAX) {
+        return capabilities->currentExtent;
+    } else {
+        int width, height;
+        glfwGetFramebufferSize(app->window, &width, &height);
+
+        VkExtent2D actual_extent = {(uint32_t)width, (uint32_t)height};
+        actual_extent.width = actual_extent.width < capabilities->maxImageExtent.width
+                                  ? actual_extent.width
+                                  : capabilities->maxImageExtent.width;
+        actual_extent.width = actual_extent.width > capabilities->minImageExtent.width
+                                  ? actual_extent.width
+                                  : capabilities->minImageExtent.width;
+        actual_extent.height = actual_extent.height < capabilities->maxImageExtent.height
+                                   ? actual_extent.height
+                                   : capabilities->maxImageExtent.height;
+        actual_extent.height = actual_extent.height > capabilities->minImageExtent.height
+                                   ? actual_extent.height
+                                   : capabilities->minImageExtent.height;
+        return actual_extent;
+    }
 }
 
 /* WINDOW CREATION *************************************************/
@@ -263,6 +356,26 @@ void create_instance(SimpleVkApp* app) {
 
 /* Physical Device Choice ************/
 
+bool check_device_extension_support(VkPhysicalDevice device) {
+    uint32_t extension_count;
+    vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
+    VkExtensionProperties available_extensions[extension_count];
+    vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, available_extensions);
+
+    bool required_extension_available[NB_REQUIRED_DEVICE_EXTENSIONS] = {0};
+    for(uint32_t i = 0; i < extension_count; i++) {
+        for(uint32_t j = 0; j < NB_REQUIRED_DEVICE_EXTENSIONS; j++) {
+            required_extension_available[j] |=
+                strcmp(available_extensions[i].extensionName, REQUIRED_DEVICE_EXTENSIONS[j]) == 0;
+        }
+    }
+    bool all_required_present = true;
+    for(uint32_t i = 0; i < NB_REQUIRED_DEVICE_EXTENSIONS; i++) {
+        all_required_present &= required_extension_available[i];
+    }
+    return all_required_present;
+}
+
 bool is_device_suitable(SimpleVkApp* app, VkPhysicalDevice device) {
     // Properties: name, type, supported vulkan version...
     VkPhysicalDeviceProperties device_properties;
@@ -272,9 +385,25 @@ bool is_device_suitable(SimpleVkApp* app, VkPhysicalDevice device) {
     VkPhysicalDeviceFeatures device_features;
     vkGetPhysicalDeviceFeatures(device, &device_features);
 
+    bool extension_supported;
+    bool swapchain_adequate = false;
+
+    extension_supported = check_device_extension_support(device);
+    if(extension_supported) {
+        SwapchainSupportDetails swapchain_support = query_swapchain_support(app, device);
+        swapchain_adequate =
+            (swapchain_support.format_count != 0) && (swapchain_support.present_mode_count != 0);
+        if(swapchain_adequate) {
+            free(swapchain_support.formats);
+            free(swapchain_support.present_modes);
+        }
+    }
+
     if(device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
        device_features.geometryShader &&
-       is_queue_family_complete(find_queue_families(app, device))) {
+       is_queue_family_complete(find_queue_families(app, device)) && extension_supported &&
+       swapchain_adequate) {
+
         printf("device %s is suitable\n", device_properties.deviceName);
         return true;
     }
@@ -326,6 +455,8 @@ void make_logical_device(SimpleVkApp* app) {
     create_info.queueCreateInfoCount = unique_indices_count;
     create_info.pQueueCreateInfos = all_queues_create_infos;
     create_info.pEnabledFeatures = &device_features;
+    create_info.enabledExtensionCount = NB_REQUIRED_DEVICE_EXTENSIONS;
+    create_info.ppEnabledExtensionNames = REQUIRED_DEVICE_EXTENSIONS;
 
     // instance and device specific validation layers used to be separate. This is no longer the
     // case, and I don't really care about older implementations compatibility, so the code is left
@@ -351,6 +482,78 @@ void create_surface(SimpleVkApp* app) {
     }
 }
 
+/* Swap chain creation ***************/
+
+void create_swapchain(SimpleVkApp* app) {
+    SwapchainSupportDetails swapchain_support = query_swapchain_support(app, app->physical_device);
+
+    VkSurfaceFormatKHR surface_format =
+        choose_swap_surface_format(swapchain_support.format_count, swapchain_support.formats);
+    VkPresentModeKHR present_mode = choose_swap_present_mode(swapchain_support.present_mode_count,
+                                                             swapchain_support.present_modes);
+    VkExtent2D extent = choose_swap_extent(app, &(swapchain_support.capabilities));
+
+    free(swapchain_support.formats);
+    free(swapchain_support.present_modes);
+
+    // add an extra image if the driver has to handle some internal op or smtg
+    uint32_t image_count = swapchain_support.capabilities.minImageCount + 1;
+    if(swapchain_support.capabilities.maxImageCount > 0 &&
+       swapchain_support.capabilities.maxImageCount < image_count) {
+        image_count = swapchain_support.capabilities.maxImageCount;
+    }
+
+    VkSwapchainCreateInfoKHR create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    create_info.surface = app->surface;
+    create_info.minImageCount = image_count;
+    create_info.imageFormat = surface_format.format;
+    create_info.imageColorSpace = surface_format.colorSpace;
+    create_info.imageExtent = extent;
+    create_info.imageArrayLayers = 1;                             // amount of layers per image
+    create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; // what are the layers
+
+    QueueFamilyIndices indices = find_queue_families(app, app->physical_device);
+    uint32_t queue_family_indices[QUEUE_FAMILY_COUNT] = {indices.graphics_family,
+                                                         indices.present_family};
+    if(indices.graphics_family != indices.present_family) {
+        create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        create_info.queueFamilyIndexCount = 2;
+        create_info.pQueueFamilyIndices = queue_family_indices;
+    } else {
+        create_info.imageSharingMode =
+            VK_SHARING_MODE_EXCLUSIVE;          // best performance as ownership is explicit
+        create_info.queueFamilyIndexCount = 0;  // Optionnal
+        create_info.pQueueFamilyIndices = NULL; // Optionnal
+    }
+
+    // can specify specific transformations like 90 degrees rotation; see supportedTransforms in
+    // capabilities
+    create_info.preTransform = swapchain_support.capabilities.currentTransform;
+
+    // if the alpha channel should be used to blend with other windows in the window system
+    create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // opaque to ignore it
+
+    create_info.presentMode = present_mode;
+    // if the pixels are obscured (e.g. another window in front) ignore them. gives best performance
+    create_info.clipped = VK_TRUE;
+
+    // if the swap chain is changed, if e.g. window is resized, it might become unoptimized and
+    // needs to be recreated from scratch and a ref to the old one must be specified.
+    create_info.oldSwapchain = VK_NULL_HANDLE;
+    if(vkCreateSwapchainKHR(app->device, &create_info, NULL, &(app->swapchain)) != VK_SUCCESS) {
+        printf("failed to create swapchain\n");
+    }
+
+    vkGetSwapchainImagesKHR(app->device, app->swapchain, &(app->image_count), NULL);
+    app->swapchain_images = calloc(app->image_count, sizeof(VkImage));
+    vkGetSwapchainImagesKHR(app->device, app->swapchain, &(app->image_count),
+                            app->swapchain_images);
+
+    app->swapchain_image_format = surface_format.format;
+    app->swapchain_extent = extent;
+}
+
 void init_vulkan(SimpleVkApp* app) {
     create_instance(app);
     setup_debug_messenger(app);
@@ -359,6 +562,8 @@ void init_vulkan(SimpleVkApp* app) {
 
     pick_physical_device(app);
     make_logical_device(app);
+
+    create_swapchain(app);
 }
 
 void main_loop(SimpleVkApp* app) {}
@@ -366,6 +571,8 @@ void main_loop(SimpleVkApp* app) {}
 void cleanup(SimpleVkApp* app) {
     // Cleanup Vulkan
 
+    vkDestroySwapchainKHR(app->device, app->swapchain, NULL);
+    free(app->swapchain_images);
     vkDestroyDevice(app->device, NULL);
 
     vkDestroySurfaceKHR(app->instance, app->surface, NULL);
