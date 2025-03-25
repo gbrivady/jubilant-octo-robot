@@ -85,10 +85,11 @@ struct SimpleVkApp {
 
     /* swapchain stuff */
     VkSwapchainKHR swapchain;
-    uint32_t image_count;
-    VkImage* swapchain_images;
     VkFormat swapchain_image_format;
     VkExtent2D swapchain_extent;
+    uint32_t image_count;
+    VkImage* swapchain_images;
+    VkImageView* swapchain_images_views;
 
 } typedef SimpleVkApp;
 
@@ -554,6 +555,35 @@ void create_swapchain(SimpleVkApp* app) {
     app->swapchain_extent = extent;
 }
 
+void create_image_views(SimpleVkApp* app) {
+    app->swapchain_images_views = calloc(app->image_count, sizeof(VkImageView));
+
+    for(size_t i = 0; i < app->image_count; i++) {
+        VkImageViewCreateInfo create_info = {0};
+        create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        create_info.image = app->swapchain_images[i];
+        create_info.viewType =
+            VK_IMAGE_VIEW_TYPE_2D; // Could be 1/2/3D texture, arrays of textures, ...
+        create_info.format = app->swapchain_image_format;
+        // This can allow for example to create monochrome image, by passing eg
+        // VK_COMPONENT_SWIZZLE_R, or one could also map them to constant 0/1 values
+        create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+        create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        create_info.subresourceRange.baseMipLevel = 0;
+        create_info.subresourceRange.levelCount = 1;
+        create_info.subresourceRange.baseArrayLayer = 0;
+        create_info.subresourceRange.layerCount = 1;
+        if(vkCreateImageView(app->device, &create_info, NULL, &(app->swapchain_images[i])) !=
+           VK_SUCCESS) {
+            printf("failed to create image view %d", i);
+        }
+    }
+}
+
 void init_vulkan(SimpleVkApp* app) {
     create_instance(app);
     setup_debug_messenger(app);
@@ -564,6 +594,7 @@ void init_vulkan(SimpleVkApp* app) {
     make_logical_device(app);
 
     create_swapchain(app);
+    create_image_views(app);
 }
 
 void main_loop(SimpleVkApp* app) {}
@@ -573,6 +604,11 @@ void cleanup(SimpleVkApp* app) {
 
     vkDestroySwapchainKHR(app->device, app->swapchain, NULL);
     free(app->swapchain_images);
+    for(size_t i = 0; i < app->image_count; i++) {
+        vkDestroyImageView(app->device, app->swapchain_images_views[i], NULL);
+    }
+
+    free(app->swapchain_images_views);
     vkDestroyDevice(app->device, NULL);
 
     vkDestroySurfaceKHR(app->instance, app->surface, NULL);
