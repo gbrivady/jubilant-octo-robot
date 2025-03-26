@@ -577,13 +577,90 @@ void create_image_views(SimpleVkApp* app) {
         create_info.subresourceRange.levelCount = 1;
         create_info.subresourceRange.baseArrayLayer = 0;
         create_info.subresourceRange.layerCount = 1;
-        if(vkCreateImageView(app->device, &create_info, NULL, &(app->swapchain_images[i])) !=
+        if(vkCreateImageView(app->device, &create_info, NULL, &(app->swapchain_images_views[i])) !=
            VK_SUCCESS) {
             printf("failed to create image view %d", i);
         }
     }
 }
 
+/* Graphics pipeline *****************/
+
+/* Shader loading */
+uint32_t* read_spirv_file(size_t* buffer_size, const char* path) {
+    FILE* file = fopen(path, "rb");
+    if(!file) {
+        printf("failed to open shader file %s\n", path);
+        return NULL;
+    }
+
+    // Get file size in bytes
+    fseek(file, 0L, SEEK_END);
+    size_t file_size = ftell(file);
+    fseek(file, 0L, SEEK_SET);
+
+    if(file_size % sizeof(uint32_t) != 0) {
+        printf("spir-v binary file %s's size is not a multiple of 4 bytes, check file", path);
+        fclose(file);
+        return NULL;
+    }
+    *buffer_size = file_size / sizeof(uint32_t);
+
+    uint32_t* buffer = calloc(*buffer_size, sizeof(uint32_t));
+    fread(buffer, sizeof(uint32_t), *buffer_size, file);
+    fclose(file);
+
+    return buffer;
+}
+
+VkShaderModule create_shader_module(SimpleVkApp* app, size_t code_buffer_size, uint32_t* code) {
+    VkShaderModuleCreateInfo create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    create_info.codeSize = code_buffer_size * sizeof(uint32_t); // ??? idk tbh
+    create_info.pCode = code;
+
+    VkShaderModule shader_module;
+    if(vkCreateShaderModule(app->device, &create_info, NULL, &shader_module) != VK_SUCCESS) {
+        printf("failed to create shader module\n");
+    }
+    return shader_module;
+}
+
+void create_graphics_pipeline(SimpleVkApp* app) {
+    size_t vertex_shader_code_buffer_size = 0;
+    uint32_t* vertex_shader_code =
+        read_spirv_file(&vertex_shader_code_buffer_size, "shaders/out/vert.spv");
+    VkShaderModule vertex_shader_module =
+        create_shader_module(app, vertex_shader_code_buffer_size, vertex_shader_code);
+    free(vertex_shader_code);
+
+    size_t fragment_shader_code_buffer_size = 0;
+    uint32_t* fragment_shader_code =
+        read_spirv_file(&fragment_shader_code_buffer_size, "shaders/out/frag.spv");
+    VkShaderModule fragment_shader_module =
+        create_shader_module(app, fragment_shader_code_buffer_size, fragment_shader_code);
+    free(fragment_shader_code);
+
+    VkPipelineShaderStageCreateInfo vertex_shader_stage_create_info = {0};
+    vertex_shader_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertex_shader_stage_create_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertex_shader_stage_create_info.module = vertex_shader_module;
+    vertex_shader_stage_create_info.pName = "main";
+
+    VkPipelineShaderStageCreateInfo fragment_shader_stage_create_info = {0};
+    fragment_shader_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragment_shader_stage_create_info.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragment_shader_stage_create_info.module = fragment_shader_module;
+    fragment_shader_stage_create_info.pName = "main";
+
+    VkPipelineShaderStageCreateInfo shader_stages[] = {vertex_shader_stage_create_info,
+                                                       fragment_shader_stage_create_info};
+
+    vkDestroyShaderModule(app->device, vertex_shader_module, NULL);
+    vkDestroyShaderModule(app->device, fragment_shader_module, NULL);
+}
+
+/*************************************/
 void init_vulkan(SimpleVkApp* app) {
     create_instance(app);
     setup_debug_messenger(app);
@@ -595,6 +672,8 @@ void init_vulkan(SimpleVkApp* app) {
 
     create_swapchain(app);
     create_image_views(app);
+
+    create_graphics_pipeline(app);
 }
 
 void main_loop(SimpleVkApp* app) {}

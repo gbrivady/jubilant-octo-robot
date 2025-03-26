@@ -2,3 +2,8 @@ build/*
 .vscode/*
 ext/*
 notes/*
+
+
+# shaders stuff
+*.spv
+*.dis
