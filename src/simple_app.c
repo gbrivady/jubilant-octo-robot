@@ -8,6 +8,8 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include "macros.h"
+
 #define WINDOW_WIDTH 400
 #define WINDOW_HEIGHT 300
 
@@ -629,14 +631,14 @@ VkShaderModule create_shader_module(SimpleVkApp* app, size_t code_buffer_size, u
 void create_graphics_pipeline(SimpleVkApp* app) {
     size_t vertex_shader_code_buffer_size = 0;
     uint32_t* vertex_shader_code =
-        read_spirv_file(&vertex_shader_code_buffer_size, "shaders/out/vert.spv");
+        read_spirv_file(&vertex_shader_code_buffer_size, MAKE_SHADER_PATH("out/vert.spv"));
     VkShaderModule vertex_shader_module =
         create_shader_module(app, vertex_shader_code_buffer_size, vertex_shader_code);
     free(vertex_shader_code);
 
     size_t fragment_shader_code_buffer_size = 0;
     uint32_t* fragment_shader_code =
-        read_spirv_file(&fragment_shader_code_buffer_size, "shaders/out/frag.spv");
+        read_spirv_file(&fragment_shader_code_buffer_size, MAKE_SHADER_PATH("out/frag.spv"));
     VkShaderModule fragment_shader_module =
         create_shader_module(app, fragment_shader_code_buffer_size, fragment_shader_code);
     free(fragment_shader_code);
