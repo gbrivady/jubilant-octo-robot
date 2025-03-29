@@ -94,9 +94,18 @@ struct SimpleVkApp {
     VkImageView* swapchain_images_views;
     VkFramebuffer* swapchain_framebuffers;
 
+/* Grapichs rendering pipeline */
     VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
+
+VkCommandPool command_pool;
+    VkCommandBuffer command_buffer; // free'd with their pool
+
+    /* Synchronization objects */
+    VkSemaphore image_available;
+    VkSemaphore render_finished;
+    VkFence in_flight;
 
 } typedef SimpleVkApp;
 
@@ -875,6 +884,88 @@ void create_framebuffers(SimpleVkApp* app) {
         }
     }
 }
+/* Command pool and buffers **********/
+void create_command_pool(SimpleVkApp* app) {
+    // should store that somewhere, I think I call it pretty (too) often
+    QueueFamilyIndices indices = find_queue_families(app, app->physical_device);
+    VkCommandPoolCreateInfo pool_info = {0};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pool_info.queueFamilyIndex = indices.graphics_family;
+
+    if(vkCreateCommandPool(app->device, &pool_info, NULL, &(app->command_pool)) != VK_SUCCESS) {
+        printf("failed to create command pool \n");
+    }
+}
+
+void create_command_buffer(SimpleVkApp* app) {
+    VkCommandBufferAllocateInfo allocate_info = {0};
+    allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocate_info.commandPool = app->command_pool;
+    // Primay: can be submitted to queue for execution
+    // Secondary: cannot, but can be call from primary ones
+    allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+
+    allocate_info.commandBufferCount = 1;
+    if(vkAllocateCommandBuffers(app->device, &allocate_info, &(app->command_buffer)) !=
+       VK_SUCCESS) {
+        printf("failed to allocate command buffers\n");
+    }
+}
+
+// Writes the commmands we want to execute into a command buffer
+void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uint32_t image_index) {
+
+    /* Start of command buffer */
+    // mandatory, specifies details about usage of this specific buffer
+    VkCommandBufferBeginInfo begin_info = {0};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = 0;
+    begin_info.pInheritanceInfo = NULL;
+    if(vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS) {
+        printf("failed to begin recording command buffer\n");
+    }
+
+    /* Starting render pass */
+    VkRenderPassBeginInfo renderpass_info = {0};
+    renderpass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderpass_info.renderPass = app->render_pass;
+    renderpass_info.framebuffer = app->swapchain_framebuffers[image_index];
+    renderpass_info.renderArea.offset = (VkOffset2D){0, 0};
+    renderpass_info.renderArea.extent = app->swapchain_extent;
+    // color to use in VK_ATTACHMENT_LOAD_OP_CLEAR
+    VkClearValue clear_color = {.color = {.float32 = {0.0f, 0.0f, 0.0f, 0.0f}}};
+    renderpass_info.clearValueCount = 1;
+    renderpass_info.pClearValues = &clear_color;
+    vkCmdBeginRenderPass(command_buffer, &renderpass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+    /* Drawing Commands */
+    // Binds the pipeline
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->graphics_pipeline);
+    // Viewport and scissor state are dynamic, so we need to set them
+    VkViewport viewport = {0};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)(app->swapchain_extent.width);
+    viewport.height = (float)(app->swapchain_extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 0.0f;
+    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+    VkRect2D scissor = {0};
+    scissor.offset = (VkOffset2D){0, 0};
+    scissor.extent = app->swapchain_extent;
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(command_buffer);
+    if(vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
+        printf("failed to record command buffer");
+    }
+}
+
+/* Frame drawing commands ************/
+void draw_frame(SimpleVkApp* app) {}
 
 /*************************************/
 void init_vulkan(SimpleVkApp* app) {
@@ -892,12 +983,17 @@ void init_vulkan(SimpleVkApp* app) {
     create_render_pass(app);
     create_graphics_pipeline(app);
     create_framebuffers(app);
+
+    create_command_pool(app);
+    create_command_buffer(app);
 }
 
 void main_loop(SimpleVkApp* app) {}
 
 void cleanup(SimpleVkApp* app) {
     // Cleanup Vulkan
+
+    vkDestroyCommandPool(app->device, app->command_pool, NULL);
     for(size_t i = 0; i < app->swapchain_image_count; i++) {
         vkDestroyFramebuffer(app->device, app->swapchain_framebuffers[i], NULL);
     }
