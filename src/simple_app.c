@@ -89,9 +89,10 @@ struct SimpleVkApp {
     VkSwapchainKHR swapchain;
     VkFormat swapchain_image_format;
     VkExtent2D swapchain_extent;
-    uint32_t image_count;
+    uint32_t swapchain_image_count;
     VkImage* swapchain_images;
     VkImageView* swapchain_images_views;
+    VkFramebuffer* swapchain_framebuffers;
 
     VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
@@ -552,9 +553,9 @@ void create_swapchain(SimpleVkApp* app) {
         printf("failed to create swapchain\n");
     }
 
-    vkGetSwapchainImagesKHR(app->device, app->swapchain, &(app->image_count), NULL);
-    app->swapchain_images = calloc(app->image_count, sizeof(VkImage));
-    vkGetSwapchainImagesKHR(app->device, app->swapchain, &(app->image_count),
+    vkGetSwapchainImagesKHR(app->device, app->swapchain, &(app->swapchain_image_count), NULL);
+    app->swapchain_images = calloc(app->swapchain_image_count, sizeof(VkImage));
+    vkGetSwapchainImagesKHR(app->device, app->swapchain, &(app->swapchain_image_count),
                             app->swapchain_images);
 
     app->swapchain_image_format = surface_format.format;
@@ -562,9 +563,9 @@ void create_swapchain(SimpleVkApp* app) {
 }
 
 void create_image_views(SimpleVkApp* app) {
-    app->swapchain_images_views = calloc(app->image_count, sizeof(VkImageView));
+    app->swapchain_images_views = calloc(app->swapchain_image_count, sizeof(VkImageView));
 
-    for(size_t i = 0; i < app->image_count; i++) {
+    for(size_t i = 0; i < app->swapchain_image_count; i++) {
         VkImageViewCreateInfo create_info = {0};
         create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         create_info.image = app->swapchain_images[i];
@@ -855,6 +856,26 @@ void create_render_pass(SimpleVkApp* app) {
     }
 }
 
+/* Framebuffers **********************/
+void create_framebuffers(SimpleVkApp* app) {
+    app->swapchain_framebuffers = calloc(app->swapchain_image_count, sizeof(VkFramebuffer));
+    for(size_t i = 0; i < app->swapchain_image_count; i++) {
+        VkImageView attachments[] = {app->swapchain_images_views[i]};
+        VkFramebufferCreateInfo framebuffer_info = {0};
+        framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer_info.renderPass = app->render_pass;
+        framebuffer_info.attachmentCount = 1;
+        framebuffer_info.pAttachments = attachments;
+        framebuffer_info.width = app->swapchain_extent.width;
+        framebuffer_info.height = app->swapchain_extent.height;
+        framebuffer_info.layers = 1;
+        if(vkCreateFramebuffer(app->device, &framebuffer_info, NULL,
+                               &(app->swapchain_framebuffers[i])) != VK_SUCCESS) {
+            printf("failed to created framebuffer %d for swapchain", i);
+        }
+    }
+}
+
 /*************************************/
 void init_vulkan(SimpleVkApp* app) {
     create_instance(app);
@@ -870,19 +891,25 @@ void init_vulkan(SimpleVkApp* app) {
 
     create_render_pass(app);
     create_graphics_pipeline(app);
+    create_framebuffers(app);
 }
 
 void main_loop(SimpleVkApp* app) {}
 
 void cleanup(SimpleVkApp* app) {
     // Cleanup Vulkan
+    for(size_t i = 0; i < app->swapchain_image_count; i++) {
+        vkDestroyFramebuffer(app->device, app->swapchain_framebuffers[i], NULL);
+    }
+
+    free(app->swapchain_framebuffers);
     vkDestroyPipeline(app->device, app->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(app->device, app->pipeline_layout, NULL);
     vkDestroyRenderPass(app->device, app->render_pass, NULL);
 
     vkDestroySwapchainKHR(app->device, app->swapchain, NULL);
     free(app->swapchain_images);
-    for(size_t i = 0; i < app->image_count; i++) {
+    for(size_t i = 0; i < app->swapchain_image_count; i++) {
         vkDestroyImageView(app->device, app->swapchain_images_views[i], NULL);
     }
 
