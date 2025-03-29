@@ -94,12 +94,12 @@ struct SimpleVkApp {
     VkImageView* swapchain_images_views;
     VkFramebuffer* swapchain_framebuffers;
 
-/* Grapichs rendering pipeline */
+    /* Grapichs rendering pipeline */
     VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
 
-VkCommandPool command_pool;
+    VkCommandPool command_pool;
     VkCommandBuffer command_buffer; // free'd with their pool
 
     /* Synchronization objects */
@@ -858,6 +858,20 @@ void create_render_pass(SimpleVkApp* app) {
     render_pass_info.pAttachments = &color_attachment;
     render_pass_info.subpassCount = 1;
     render_pass_info.pSubpasses = &subpass;
+    // Dependencies
+    VkSubpassDependency dependency = {0};
+    // refers to implicit subpass before/after. Since it is src, it is the one before.
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass =
+        0; // subpass 0: our only one. dst > src to avoid cycles (except if external)
+    dependency.srcStageMask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // finish reading before accessing
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    render_pass_info.dependencyCount = 1;
+    render_pass_info.pDependencies = &dependency;
 
     if(vkCreateRenderPass(app->device, &render_pass_info, NULL, &(app->render_pass)) !=
        VK_SUCCESS) {
@@ -965,7 +979,73 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
 }
 
 /* Frame drawing commands ************/
-void draw_frame(SimpleVkApp* app) {}
+void create_synchronization_objects(SimpleVkApp* app) {
+    VkSemaphoreCreateInfo semaphore_info = {0};
+    semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkFenceCreateInfo fence_info = {0};
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // starts at 1 to not explode
+
+    if(vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->image_available)) !=
+           VK_SUCCESS ||
+       vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->render_finished)) !=
+           VK_SUCCESS ||
+       vkCreateFence(app->device, &fence_info, NULL, &(app->in_flight)) != VK_SUCCESS) {
+        printf("failed to create synchronization objects\n");
+    }
+}
+
+void draw_frame(SimpleVkApp* app) {
+    vkWaitForFences(app->device, 1, &(app->in_flight), VK_TRUE, UINT64_MAX);
+    vkResetFences(app->device, 1, &(app->in_flight));
+
+    uint32_t image_index;
+    vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX, app->image_available,
+                          VK_NULL_HANDLE, &image_index);
+
+    vkResetCommandBuffer(app->command_buffer, 0);
+    record_command_buffer(app, app->command_buffer, image_index);
+
+    /* Configure queue submission and synchronization */
+    VkSubmitInfo submit_info = {0};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore wait_semaphores[] = {app->image_available};
+    VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    // Specify semaphores to wait on and the stages in which we should wait
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = wait_semaphores; // when image is available...
+    submit_info.pWaitDstStageMask = wait_stages;   // ...can start writing to the color attachment
+    // in theory it can start computing shaders before the image is available.
+    // command buffers to submit
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &(app->command_buffer);
+    // Semaphore(s) to signal once the command buffer(s) have finished
+    VkSemaphore signal_semaphores[] = {app->render_finished};
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = signal_semaphores;
+
+    if(vkQueueSubmit(app->graphics_queue, 1, &submit_info, app->in_flight) != VK_SUCCESS) {
+        printf("failed to submit draw command buff\n");
+    }
+
+    /* Presentation */
+    // Submit the result back to the swap chain to have it show up on screen
+    VkPresentInfoKHR present_info = {0};
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    // which semaphore to wait on before presentation can happen
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = signal_semaphores;
+    // swap chains to use, index for each swap chain
+    VkSwapchainKHR swapchains[] = {app->swapchain};
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = swapchains;
+    present_info.pImageIndices = &image_index;
+    // if you have several swap chains, can store VK_RESULTS in an array
+    present_info.pResults = NULL;
+
+    vkQueuePresentKHR(app->present_queue, &present_info);
+}
 
 /*************************************/
 void init_vulkan(SimpleVkApp* app) {
@@ -986,12 +1066,23 @@ void init_vulkan(SimpleVkApp* app) {
 
     create_command_pool(app);
     create_command_buffer(app);
+
+    create_synchronization_objects(app);
 }
 
-void main_loop(SimpleVkApp* app) {}
+void main_loop(SimpleVkApp* app) {
+    while(!glfwWindowShouldClose(app->window)) {
+        glfwPollEvents();
+        draw_frame(app);
+    }
+    vkDeviceWaitIdle(app->device);
+}
 
 void cleanup(SimpleVkApp* app) {
     // Cleanup Vulkan
+    vkDestroySemaphore(app->device, app->image_available, NULL);
+    vkDestroySemaphore(app->device, app->render_finished, NULL);
+    vkDestroyFence(app->device, app->in_flight, NULL);
 
     vkDestroyCommandPool(app->device, app->command_pool, NULL);
     for(size_t i = 0; i < app->swapchain_image_count; i++) {
@@ -1034,9 +1125,7 @@ int main(int argc, char const* argv[]) {
     init_window(app);
     init_vulkan(app);
 
-    while(!glfwWindowShouldClose(app->window)) {
-        glfwPollEvents();
-    }
+    main_loop(app);
 
     cleanup(app);
     free(app);
