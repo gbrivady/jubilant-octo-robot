@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <time.h>
+
 #include <vulkan/vulkan.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -26,6 +28,9 @@ const char* REQUIRED_DEVICE_EXTENSIONS[NB_REQUIRED_DEVICE_EXTENSIONS] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
 #define QUEUE_FAMILY_COUNT 2
+
+#define MAX_FRAMES_IN_FLIGHT 2
+
 struct QueueFamilyIndices {
     uint32_t graphics_family;
     bool graphics_family_found;
@@ -55,6 +60,7 @@ void build_indices_set(QueueFamilyIndices indices, uint32_t* set_size,
             }
         }
     }
+    return;
 }
 
 bool is_queue_family_complete(QueueFamilyIndices q) {
@@ -94,18 +100,19 @@ struct SimpleVkApp {
     VkImageView* swapchain_images_views;
     VkFramebuffer* swapchain_framebuffers;
 
+    uint32_t current_frame;
     /* Grapichs rendering pipeline */
     VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
 
     VkCommandPool command_pool;
-    VkCommandBuffer command_buffer; // free'd with their pool
+    VkCommandBuffer* command_buffers; // free'd with their pool
 
     /* Synchronization objects */
-    VkSemaphore image_available;
-    VkSemaphore render_finished;
-    VkFence in_flight;
+    VkSemaphore* image_available;
+    VkSemaphore* render_finished;
+    VkFence* in_flight;
 
 } typedef SimpleVkApp;
 
@@ -257,7 +264,7 @@ debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
 void populate_debug_messenger_create_info(VkDebugUtilsMessengerCreateInfoEXT* create_info) {
     create_info->sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
     create_info->messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                                   VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                                   //    VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
                                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
                                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
     create_info->messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
@@ -802,7 +809,7 @@ void create_graphics_pipeline(SimpleVkApp* app) {
     pipeline_info.renderPass = app->render_pass;
     pipeline_info.subpass = 0;
     /* Can derive pipelines from existing one: the idea is that it is cheaper to swap when you have
-     * a lot of common points to being with*/
+     * a lot of common points to begin with*/
     pipeline_info.basePipelineHandle = VK_NULL_HANDLE; // Optional
     pipeline_info.basePipelineIndex = -1;              // Optional
 
@@ -912,17 +919,18 @@ void create_command_pool(SimpleVkApp* app) {
     }
 }
 
-void create_command_buffer(SimpleVkApp* app) {
+void create_command_buffers(SimpleVkApp* app) {
+    app->command_buffers = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkCommandBuffer));
+
     VkCommandBufferAllocateInfo allocate_info = {0};
     allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocate_info.commandPool = app->command_pool;
     // Primay: can be submitted to queue for execution
     // Secondary: cannot, but can be call from primary ones
     allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
 
-    allocate_info.commandBufferCount = 1;
-    if(vkAllocateCommandBuffers(app->device, &allocate_info, &(app->command_buffer)) !=
-       VK_SUCCESS) {
+    if(vkAllocateCommandBuffers(app->device, &allocate_info, app->command_buffers) != VK_SUCCESS) {
         printf("failed to allocate command buffers\n");
     }
 }
@@ -980,37 +988,43 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
 
 /* Frame drawing commands ************/
 void create_synchronization_objects(SimpleVkApp* app) {
+    app->image_available = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkSemaphore));
+    app->render_finished = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkSemaphore));
+    app->in_flight = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkFence));
+
     VkSemaphoreCreateInfo semaphore_info = {0};
     semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     VkFenceCreateInfo fence_info = {0};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // starts at 1 to not explode
 
-    if(vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->image_available)) !=
-           VK_SUCCESS ||
-       vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->render_finished)) !=
-           VK_SUCCESS ||
-       vkCreateFence(app->device, &fence_info, NULL, &(app->in_flight)) != VK_SUCCESS) {
-        printf("failed to create synchronization objects\n");
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if(vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->image_available[i])) !=
+               VK_SUCCESS ||
+           vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->render_finished[i])) !=
+               VK_SUCCESS ||
+           vkCreateFence(app->device, &fence_info, NULL, &(app->in_flight[i])) != VK_SUCCESS) {
+            printf("failed to create synchronization objects\n");
+        }
     }
 }
 
 void draw_frame(SimpleVkApp* app) {
-    vkWaitForFences(app->device, 1, &(app->in_flight), VK_TRUE, UINT64_MAX);
-    vkResetFences(app->device, 1, &(app->in_flight));
+    vkWaitForFences(app->device, 1, &(app->in_flight[app->current_frame]), VK_TRUE, UINT64_MAX);
+    vkResetFences(app->device, 1, &(app->in_flight[app->current_frame]));
 
     uint32_t image_index;
-    vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX, app->image_available,
-                          VK_NULL_HANDLE, &image_index);
+    vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX,
+                          app->image_available[app->current_frame], VK_NULL_HANDLE, &image_index);
 
-    vkResetCommandBuffer(app->command_buffer, 0);
-    record_command_buffer(app, app->command_buffer, image_index);
+    vkResetCommandBuffer(app->command_buffers[app->current_frame], 0);
+    record_command_buffer(app, app->command_buffers[app->current_frame], image_index);
 
     /* Configure queue submission and synchronization */
     VkSubmitInfo submit_info = {0};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    VkSemaphore wait_semaphores[] = {app->image_available};
+    VkSemaphore wait_semaphores[] = {app->image_available[app->current_frame]};
     VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     // Specify semaphores to wait on and the stages in which we should wait
     submit_info.waitSemaphoreCount = 1;
@@ -1019,13 +1033,14 @@ void draw_frame(SimpleVkApp* app) {
     // in theory it can start computing shaders before the image is available.
     // command buffers to submit
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &(app->command_buffer);
+    submit_info.pCommandBuffers = &(app->command_buffers[app->current_frame]);
     // Semaphore(s) to signal once the command buffer(s) have finished
-    VkSemaphore signal_semaphores[] = {app->render_finished};
+    VkSemaphore signal_semaphores[] = {app->render_finished[app->current_frame]};
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = signal_semaphores;
 
-    if(vkQueueSubmit(app->graphics_queue, 1, &submit_info, app->in_flight) != VK_SUCCESS) {
+    if(vkQueueSubmit(app->graphics_queue, 1, &submit_info, app->in_flight[app->current_frame]) !=
+       VK_SUCCESS) {
         printf("failed to submit draw command buff\n");
     }
 
@@ -1045,6 +1060,7 @@ void draw_frame(SimpleVkApp* app) {
     present_info.pResults = NULL;
 
     vkQueuePresentKHR(app->present_queue, &present_info);
+    app->current_frame = (app->current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 /*************************************/
@@ -1065,31 +1081,42 @@ void init_vulkan(SimpleVkApp* app) {
     create_framebuffers(app);
 
     create_command_pool(app);
-    create_command_buffer(app);
+    create_command_buffers(app);
 
     create_synchronization_objects(app);
 }
 
 void main_loop(SimpleVkApp* app) {
+    // clock_t tic, toc;
     while(!glfwWindowShouldClose(app->window)) {
         glfwPollEvents();
+        // tic = clock();
         draw_frame(app);
+        // toc = clock();
+        // printf("Elapsed: %f seconds\r", 1 / ((double)(toc - tic) / CLOCKS_PER_SEC));
     }
     vkDeviceWaitIdle(app->device);
 }
 
 void cleanup(SimpleVkApp* app) {
     // Cleanup Vulkan
-    vkDestroySemaphore(app->device, app->image_available, NULL);
-    vkDestroySemaphore(app->device, app->render_finished, NULL);
-    vkDestroyFence(app->device, app->in_flight, NULL);
+    for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        vkDestroySemaphore(app->device, app->image_available[i], NULL);
+        vkDestroySemaphore(app->device, app->render_finished[i], NULL);
+        vkDestroyFence(app->device, app->in_flight[i], NULL);
+    }
+    free(app->image_available);
+    free(app->render_finished);
+    free(app->in_flight);
 
     vkDestroyCommandPool(app->device, app->command_pool, NULL);
+    free(app->command_buffers);
+
     for(size_t i = 0; i < app->swapchain_image_count; i++) {
         vkDestroyFramebuffer(app->device, app->swapchain_framebuffers[i], NULL);
     }
-
     free(app->swapchain_framebuffers);
+
     vkDestroyPipeline(app->device, app->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(app->device, app->pipeline_layout, NULL);
     vkDestroyRenderPass(app->device, app->render_pass, NULL);
