@@ -111,7 +111,7 @@ struct SimpleVkApp {
 
     /* Synchronization objects */
     VkSemaphore* image_available;
-    VkSemaphore* render_finished;
+    VkSemaphore* image_ready_present;
     VkFence* in_flight;
 
 } typedef SimpleVkApp;
@@ -988,8 +988,12 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
 
 /* Frame drawing commands ************/
 void create_synchronization_objects(SimpleVkApp* app) {
+    // Create a semaphore per swapchain image
+    app->image_ready_present = calloc(app->swapchain_image_count, sizeof(VkSemaphore));
+
+    // in-flight fences are used to synchronize cpu frames and gpu frames, so only need as many as
+    // max frames in flight.
     app->image_available = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkSemaphore));
-    app->render_finished = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkSemaphore));
     app->in_flight = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkFence));
 
     VkSemaphoreCreateInfo semaphore_info = {0};
@@ -1000,31 +1004,38 @@ void create_synchronization_objects(SimpleVkApp* app) {
 
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         if(vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->image_available[i])) !=
-               VK_SUCCESS ||
-           vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->render_finished[i])) !=
-               VK_SUCCESS ||
-           vkCreateFence(app->device, &fence_info, NULL, &(app->in_flight[i])) != VK_SUCCESS) {
-            printf("failed to create synchronization objects\n");
+           VK_SUCCESS) {
+            printf("failed to create semaphores for all frames in flight\n");
+        }
+        if(vkCreateFence(app->device, &fence_info, NULL, &(app->in_flight[i])) != VK_SUCCESS) {
+            printf("failed to create fences for all frames in flight\n");
+        }
+    }
+    for(size_t i = 0; i < app->swapchain_image_count; i++) {
+        if(vkCreateSemaphore(app->device, &semaphore_info, NULL, &(app->image_ready_present[i])) !=
+           VK_SUCCESS) {
+            printf("failed to create render finished semaphores for all swapchain images\n");
         }
     }
 }
 
 void draw_frame(SimpleVkApp* app) {
-    vkWaitForFences(app->device, 1, &(app->in_flight[app->current_frame]), VK_TRUE, UINT64_MAX);
-    vkResetFences(app->device, 1, &(app->in_flight[app->current_frame]));
+    uint32_t inflight_frame = app->current_frame;
+    vkWaitForFences(app->device, 1, &(app->in_flight[inflight_frame]), VK_TRUE, UINT64_MAX);
+    vkResetFences(app->device, 1, &(app->in_flight[inflight_frame]));
 
     uint32_t image_index;
     vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX,
-                          app->image_available[app->current_frame], VK_NULL_HANDLE, &image_index);
+                          app->image_available[inflight_frame], VK_NULL_HANDLE, &image_index);
 
-    vkResetCommandBuffer(app->command_buffers[app->current_frame], 0);
-    record_command_buffer(app, app->command_buffers[app->current_frame], image_index);
+    vkResetCommandBuffer(app->command_buffers[inflight_frame], 0);
+    record_command_buffer(app, app->command_buffers[inflight_frame], image_index);
 
     /* Configure queue submission and synchronization */
     VkSubmitInfo submit_info = {0};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    VkSemaphore wait_semaphores[] = {app->image_available[app->current_frame]};
+    VkSemaphore wait_semaphores[] = {app->image_available[inflight_frame]};
     VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     // Specify semaphores to wait on and the stages in which we should wait
     submit_info.waitSemaphoreCount = 1;
@@ -1033,13 +1044,14 @@ void draw_frame(SimpleVkApp* app) {
     // in theory it can start computing shaders before the image is available.
     // command buffers to submit
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &(app->command_buffers[app->current_frame]);
+    submit_info.pCommandBuffers = &(app->command_buffers[inflight_frame]);
     // Semaphore(s) to signal once the command buffer(s) have finished
-    VkSemaphore signal_semaphores[] = {app->render_finished[app->current_frame]};
+    VkSemaphore signal_semaphores[] = {
+        app->image_ready_present[image_index]}; // index semaphore on swapchain index
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = signal_semaphores;
 
-    if(vkQueueSubmit(app->graphics_queue, 1, &submit_info, app->in_flight[app->current_frame]) !=
+    if(vkQueueSubmit(app->graphics_queue, 1, &submit_info, app->in_flight[inflight_frame]) !=
        VK_SUCCESS) {
         printf("failed to submit draw command buff\n");
     }
@@ -1060,7 +1072,7 @@ void draw_frame(SimpleVkApp* app) {
     present_info.pResults = NULL;
 
     vkQueuePresentKHR(app->present_queue, &present_info);
-    app->current_frame = (app->current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
+    app->current_frame = (inflight_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 /*************************************/
@@ -1102,11 +1114,14 @@ void cleanup(SimpleVkApp* app) {
     // Cleanup Vulkan
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(app->device, app->image_available[i], NULL);
-        vkDestroySemaphore(app->device, app->render_finished[i], NULL);
         vkDestroyFence(app->device, app->in_flight[i], NULL);
     }
+    for(size_t i = 0; i < app->swapchain_image_count; i++) {
+        vkDestroySemaphore(app->device, app->image_ready_present[i], NULL);
+    }
+
     free(app->image_available);
-    free(app->render_finished);
+    free(app->image_ready_present);
     free(app->in_flight);
 
     vkDestroyCommandPool(app->device, app->command_pool, NULL);
