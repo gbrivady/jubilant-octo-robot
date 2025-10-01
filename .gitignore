@@ -3,7 +3,9 @@ build/*
 ext/*
 notes/*
 
+# clangd
+.cache/* 
 
-# shaders stuff
+# shaders output
 *.spv
 *.dis
