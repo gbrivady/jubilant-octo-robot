@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
@@ -81,6 +82,7 @@ struct SimpleVkApp {
     GLFWwindow* window;
     VkInstance instance;
     bool validation_layers_available;
+    bool framebuffer_resized;
 
     VkDebugUtilsMessengerEXT debug_messenger;
 
@@ -212,12 +214,20 @@ VkExtent2D choose_swap_extent(SimpleVkApp* app, VkSurfaceCapabilitiesKHR* capabi
     }
 }
 
-/* WINDOW CREATION *************************************************/
+/* WINDOW MANAGEMENT ***********************************************/
+
+void framebuffer_resized_callback(GLFWwindow* window, int height, int width){
+    SimpleVkApp* app_pointer = (SimpleVkApp*) glfwGetWindowUserPointer(window);
+    app_pointer->framebuffer_resized = true;
+    return;
+}
 
 void init_window(SimpleVkApp* app) {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     app->window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "jubilant", NULL, NULL);
+    glfwSetWindowUserPointer(app->window, app); // set userdata for window
+    glfwSetFramebufferSizeCallback(app->window, framebuffer_resized_callback);
 }
 
 /* VkInstance CREATION *********************************************/
@@ -602,7 +612,7 @@ void create_image_views(SimpleVkApp* app) {
         create_info.subresourceRange.layerCount = 1;
         if(vkCreateImageView(app->device, &create_info, NULL, &(app->swapchain_images_views[i])) !=
            VK_SUCCESS) {
-            printf("failed to create image view %d", i);
+            printf("failed to create image view %zu", i);
         }
     }
 }
@@ -901,7 +911,7 @@ void create_framebuffers(SimpleVkApp* app) {
         framebuffer_info.layers = 1;
         if(vkCreateFramebuffer(app->device, &framebuffer_info, NULL,
                                &(app->swapchain_framebuffers[i])) != VK_SUCCESS) {
-            printf("failed to created framebuffer %d for swapchain", i);
+            printf("failed to created framebuffer %zu for swapchain", i);
         }
     }
 }
@@ -986,6 +996,36 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
     }
 }
 
+/* Swapchain maintenance *************/
+void cleanup_swapchain(SimpleVkApp* app) {
+    for(size_t i = 0; i < app->swapchain_image_count; i++) {
+        vkDestroyFramebuffer(app->device, app->swapchain_framebuffers[i], NULL);
+    }
+    free(app->swapchain_framebuffers);
+
+    for(size_t i = 0; i < app->swapchain_image_count; i++) {
+        vkDestroyImageView(app->device, app->swapchain_images_views[i], NULL);
+    }
+    free(app->swapchain_images_views);
+
+    free(app->swapchain_images);
+
+    vkDestroySwapchainKHR(app->device, app->swapchain, NULL);
+}
+
+void recreate_swapchain(SimpleVkApp* app) {
+    // this function will recreate the swapchain when anything change about the window
+    vkDeviceWaitIdle(app->device);
+
+    // clean everything that will be recreated very soon
+    cleanup_swapchain(app);
+
+    // call all the function that depends on the swapchain or the window size
+    create_swapchain(app);
+    create_image_views(app);
+    create_framebuffers(app);
+}
+
 /* Frame drawing commands ************/
 void create_synchronization_objects(SimpleVkApp* app) {
     // Create a semaphore per swapchain image
@@ -1020,13 +1060,23 @@ void create_synchronization_objects(SimpleVkApp* app) {
 }
 
 void draw_frame(SimpleVkApp* app) {
+    VkResult last_result;
     uint32_t inflight_frame = app->current_frame;
     vkWaitForFences(app->device, 1, &(app->in_flight[inflight_frame]), VK_TRUE, UINT64_MAX);
-    vkResetFences(app->device, 1, &(app->in_flight[inflight_frame]));
 
     uint32_t image_index;
-    vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX,
+    last_result = vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX,
                           app->image_available[inflight_frame], VK_NULL_HANDLE, &image_index);
+
+    if(last_result == VK_ERROR_OUT_OF_DATE_KHR){
+        recreate_swapchain(app);
+        return;
+    } else if(last_result != VK_SUCCESS && last_result != VK_SUBOPTIMAL_KHR) {
+        printf("failed to acquire swapchain image");
+    }
+
+    // reset fence only if work will actually be performed
+    vkResetFences(app->device, 1, &(app->in_flight[inflight_frame]));   
 
     vkResetCommandBuffer(app->command_buffers[inflight_frame], 0);
     record_command_buffer(app, app->command_buffers[inflight_frame], image_index);
@@ -1071,11 +1121,19 @@ void draw_frame(SimpleVkApp* app) {
     // if you have several swap chains, can store VK_RESULTS in an array
     present_info.pResults = NULL;
 
-    vkQueuePresentKHR(app->present_queue, &present_info);
+    last_result = vkQueuePresentKHR(app->present_queue, &present_info);
+    if(last_result == VK_ERROR_OUT_OF_DATE_KHR || last_result == VK_SUBOPTIMAL_KHR || app->framebuffer_resized){
+        app->framebuffer_resized = false;
+        recreate_swapchain(app);
+    } else if (last_result != VK_SUCCESS) {
+        printf("failed to present swapchain image\n");
+    }
+
     app->current_frame = (inflight_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-/*************************************/
+
+
 void init_vulkan(SimpleVkApp* app) {
     create_instance(app);
     setup_debug_messenger(app);
@@ -1112,37 +1170,28 @@ void main_loop(SimpleVkApp* app) {
 
 void cleanup(SimpleVkApp* app) {
     // Cleanup Vulkan
+
+    cleanup_swapchain(app);
+
+    // Sync objects
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(app->device, app->image_available[i], NULL);
         vkDestroyFence(app->device, app->in_flight[i], NULL);
     }
+    free(app->image_available);
+    free(app->in_flight);
     for(size_t i = 0; i < app->swapchain_image_count; i++) {
         vkDestroySemaphore(app->device, app->image_ready_present[i], NULL);
     }
-
-    free(app->image_available);
     free(app->image_ready_present);
-    free(app->in_flight);
 
     vkDestroyCommandPool(app->device, app->command_pool, NULL);
     free(app->command_buffers);
-
-    for(size_t i = 0; i < app->swapchain_image_count; i++) {
-        vkDestroyFramebuffer(app->device, app->swapchain_framebuffers[i], NULL);
-    }
-    free(app->swapchain_framebuffers);
 
     vkDestroyPipeline(app->device, app->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(app->device, app->pipeline_layout, NULL);
     vkDestroyRenderPass(app->device, app->render_pass, NULL);
 
-    vkDestroySwapchainKHR(app->device, app->swapchain, NULL);
-    free(app->swapchain_images);
-    for(size_t i = 0; i < app->swapchain_image_count; i++) {
-        vkDestroyImageView(app->device, app->swapchain_images_views[i], NULL);
-    }
-
-    free(app->swapchain_images_views);
     vkDestroyDevice(app->device, NULL);
 
     vkDestroySurfaceKHR(app->instance, app->surface, NULL);
