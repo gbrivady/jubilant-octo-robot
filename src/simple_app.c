@@ -1,5 +1,7 @@
-#include <inttypes.h>
+#include "cglm/types.h"
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +12,8 @@
 #include <vulkan/vulkan_core.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+
+#include <cglm/cglm.h>
 
 #include "macros.h"
 
@@ -31,6 +35,43 @@ const char* REQUIRED_DEVICE_EXTENSIONS[NB_REQUIRED_DEVICE_EXTENSIONS] = {
 #define QUEUE_FAMILY_COUNT 2
 
 #define MAX_FRAMES_IN_FLIGHT 2
+
+#define NB_VERTEX_ATTRIBUTES 2
+struct Vertex {
+    vec2 position;
+    vec3 color;
+} typedef Vertex;
+
+const size_t nb_triangle_vertices = 3;
+const Vertex triangle_vertices[3] = {
+    {{0.0, -0.5}, {1.0, 0.0, 0.0}}, {{0.5, 0.5}, {0.0, 1.0, 0.0}}, {{-0.5, 0.5}, {0.0, 0.0, 1.0}}};
+
+VkVertexInputBindingDescription get_binding_description() {
+    VkVertexInputBindingDescription binding_description = {0};
+    binding_description.binding = 0;
+    binding_description.stride = sizeof(Vertex);
+    binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    return binding_description;
+};
+
+void get_attribute_description(
+    VkVertexInputAttributeDescription output_attribute_descriptions[NB_VERTEX_ATTRIBUTES]) {
+    VkVertexInputAttributeDescription position_attribute = {0};
+    position_attribute.binding = 0;
+    position_attribute.location = 0;                     // cf vertex shader
+    position_attribute.format = VK_FORMAT_R32G32_SFLOAT; // vec2
+    position_attribute.offset = offsetof(Vertex, position);
+
+    VkVertexInputAttributeDescription color_attribute = {0};
+    color_attribute.binding = 0;
+    color_attribute.location = 1;
+    color_attribute.format = VK_FORMAT_R32G32B32_SFLOAT;
+    color_attribute.offset = offsetof(Vertex, color);
+
+    output_attribute_descriptions[0] = position_attribute;
+    output_attribute_descriptions[1] = color_attribute;
+}
 
 struct QueueFamilyIndices {
     uint32_t graphics_family;
@@ -115,6 +156,10 @@ struct SimpleVkApp {
     VkSemaphore* image_available;
     VkSemaphore* image_ready_present;
     VkFence* in_flight;
+
+    /* Buffers */
+    VkBuffer triangle_vertex_buffer;
+    VkDeviceMemory triangle_vertex_buffer_memory;
 
 } typedef SimpleVkApp;
 
@@ -216,8 +261,8 @@ VkExtent2D choose_swap_extent(SimpleVkApp* app, VkSurfaceCapabilitiesKHR* capabi
 
 /* WINDOW MANAGEMENT ***********************************************/
 
-void framebuffer_resized_callback(GLFWwindow* window, int height, int width){
-    SimpleVkApp* app_pointer = (SimpleVkApp*) glfwGetWindowUserPointer(window);
+void framebuffer_resized_callback(GLFWwindow* window, int height, int width) {
+    SimpleVkApp* app_pointer = (SimpleVkApp*)glfwGetWindowUserPointer(window);
     app_pointer->framebuffer_resized = true;
     return;
 }
@@ -703,9 +748,18 @@ void create_graphics_pipeline(SimpleVkApp* app) {
 
     /* Vertex input */
     // Describes how the data is passed to the vertex shader: bindings, ie per vertex or per
-    // instance. Also describes the attribue passed, offset etc
+    // instance. Also describes the attribute passed, offset etc
     VkPipelineVertexInputStateCreateInfo vertex_input_info = {0};
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    VkVertexInputBindingDescription binding_description = get_binding_description();
+    VkVertexInputAttributeDescription attribute_descriptions[NB_VERTEX_ATTRIBUTES];
+    get_attribute_description(attribute_descriptions);
+
+    vertex_input_info.vertexBindingDescriptionCount = 1;
+    vertex_input_info.vertexAttributeDescriptionCount = NB_VERTEX_ATTRIBUTES;
+    vertex_input_info.pVertexBindingDescriptions = &binding_description;
+    vertex_input_info.pVertexAttributeDescriptions = attribute_descriptions;
 
     /* Input assembly */
     // What kind of geometry will be drawn from the vertices, and if primitive restart should be
@@ -915,6 +969,72 @@ void create_framebuffers(SimpleVkApp* app) {
         }
     }
 }
+
+/* Vertex buffers ********************/
+uint32_t find_memory_type(SimpleVkApp* app, uint32_t type_filter,
+                          VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties memory_properties = {0};
+    vkGetPhysicalDeviceMemoryProperties(app->physical_device, &memory_properties);
+
+    for(uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
+        /*
+        Check that:
+        1. the memory is suitable for the vertex buffer
+        2. its properties are appropriate and the cpu can write into it
+        */
+        if(type_filter & (1 << i) &&
+           ((memory_properties.memoryTypes[i].propertyFlags & properties) == properties)) {
+            return i;
+        }
+    }
+
+    printf("failed to find suitable memory type");
+    return UINT32_MAX;
+}
+
+void create_vertex_buffer(SimpleVkApp* app) {
+    VkBufferCreateInfo buffer_info = {0};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = sizeof(Vertex) * nb_triangle_vertices;
+    buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; // multiple purposes can be achieved wot
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;   // only used by the graphics queue
+
+    if(vkCreateBuffer(app->device, &buffer_info, NULL, &(app->triangle_vertex_buffer)) !=
+       VK_SUCCESS) {
+        printf("failed to create vertex buffer for triangle\n");
+    }
+
+    /* Store the size required, alignment, and memory fields suitable for the buffer */
+    VkMemoryRequirements memory_requirements = {0};
+    vkGetBufferMemoryRequirements(app->device, app->triangle_vertex_buffer, &memory_requirements);
+
+    VkMemoryAllocateInfo allocate_info = {0};
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.allocationSize = memory_requirements.size;
+    /*
+    Ensure that:
+    - the memory can be mapped for host access (visible)
+    - the cache sync operations between CPU and GPU are automatic (coherent). Normally, you have to
+    tell the GPU when the CPU writes to memory, and inversly, to ensure there are no problems.
+    */
+    allocate_info.memoryTypeIndex = find_memory_type(app, memory_requirements.memoryTypeBits,
+                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if(vkAllocateMemory(app->device, &allocate_info, NULL, &(app->triangle_vertex_buffer_memory))) {
+        printf("failed to allocate vertex buffer memory for triangle\n");
+    }
+    vkBindBufferMemory(app->device, app->triangle_vertex_buffer, app->triangle_vertex_buffer_memory,
+                       0);
+
+    void* data;
+    vkMapMemory(app->device, app->triangle_vertex_buffer_memory, 0, buffer_info.size, 0, &data);
+    memcpy(data, triangle_vertices, (size_t)buffer_info.size);
+    vkUnmapMemory(app->device, app->triangle_vertex_buffer_memory);
+    // Since we went with a host coherent memory heap, we do not need to call cache sync operation
+    // (vkFush/InvalidateMappedMemoryRanges)
+}
+
 /* Command pool and buffers **********/
 void create_command_pool(SimpleVkApp* app) {
     // should store that somewhere, I think I call it pretty (too) often
@@ -974,6 +1094,11 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
     /* Drawing Commands */
     // Binds the pipeline
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->graphics_pipeline);
+
+    VkBuffer vertex_buffers[] = {app->triangle_vertex_buffer};
+    VkDeviceSize offsets[] = {0};
+    vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, offsets);
+
     // Viewport and scissor state are dynamic, so we need to set them
     VkViewport viewport = {0};
     viewport.x = 0.0f;
@@ -988,7 +1113,9 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
     scissor.offset = (VkOffset2D){0, 0};
     scissor.extent = app->swapchain_extent;
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+    /**/
+    vkCmdDraw(command_buffer, (uint32_t)nb_triangle_vertices, 1, 0, 0);
 
     vkCmdEndRenderPass(command_buffer);
     if(vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
@@ -1065,10 +1192,11 @@ void draw_frame(SimpleVkApp* app) {
     vkWaitForFences(app->device, 1, &(app->in_flight[inflight_frame]), VK_TRUE, UINT64_MAX);
 
     uint32_t image_index;
-    last_result = vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX,
-                          app->image_available[inflight_frame], VK_NULL_HANDLE, &image_index);
+    last_result =
+        vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX,
+                              app->image_available[inflight_frame], VK_NULL_HANDLE, &image_index);
 
-    if(last_result == VK_ERROR_OUT_OF_DATE_KHR){
+    if(last_result == VK_ERROR_OUT_OF_DATE_KHR) {
         recreate_swapchain(app);
         return;
     } else if(last_result != VK_SUCCESS && last_result != VK_SUBOPTIMAL_KHR) {
@@ -1076,7 +1204,7 @@ void draw_frame(SimpleVkApp* app) {
     }
 
     // reset fence only if work will actually be performed
-    vkResetFences(app->device, 1, &(app->in_flight[inflight_frame]));   
+    vkResetFences(app->device, 1, &(app->in_flight[inflight_frame]));
 
     vkResetCommandBuffer(app->command_buffers[inflight_frame], 0);
     record_command_buffer(app, app->command_buffers[inflight_frame], image_index);
@@ -1122,17 +1250,16 @@ void draw_frame(SimpleVkApp* app) {
     present_info.pResults = NULL;
 
     last_result = vkQueuePresentKHR(app->present_queue, &present_info);
-    if(last_result == VK_ERROR_OUT_OF_DATE_KHR || last_result == VK_SUBOPTIMAL_KHR || app->framebuffer_resized){
+    if(last_result == VK_ERROR_OUT_OF_DATE_KHR || last_result == VK_SUBOPTIMAL_KHR ||
+       app->framebuffer_resized) {
         app->framebuffer_resized = false;
         recreate_swapchain(app);
-    } else if (last_result != VK_SUCCESS) {
+    } else if(last_result != VK_SUCCESS) {
         printf("failed to present swapchain image\n");
     }
 
     app->current_frame = (inflight_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
-
-
 
 void init_vulkan(SimpleVkApp* app) {
     create_instance(app);
@@ -1153,6 +1280,8 @@ void init_vulkan(SimpleVkApp* app) {
     create_command_pool(app);
     create_command_buffers(app);
 
+    create_vertex_buffer(app);
+
     create_synchronization_objects(app);
 }
 
@@ -1171,7 +1300,12 @@ void main_loop(SimpleVkApp* app) {
 void cleanup(SimpleVkApp* app) {
     // Cleanup Vulkan
 
+    // Swapchain
     cleanup_swapchain(app);
+
+    // Buffers
+    vkDestroyBuffer(app->device, app->triangle_vertex_buffer, NULL);
+    vkFreeMemory(app->device, app->triangle_vertex_buffer_memory, NULL);
 
     // Sync objects
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
