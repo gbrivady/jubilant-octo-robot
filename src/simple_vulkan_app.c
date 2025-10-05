@@ -40,8 +40,18 @@ struct Vertex {
 } typedef Vertex;
 
 const size_t NB_TRIANGLE_VERTICES = 3;
-const Vertex triangle_vertices[3] = {
+const Vertex TRIANGLE_VERTICES[3] = {
     {{0.0, -0.5}, {1.0, 0.0, 0.0}}, {{0.5, 0.5}, {0.0, 1.0, 0.0}}, {{-0.5, 0.5}, {0.0, 0.0, 1.0}}};
+
+const size_t NB_SQUARE_VERTICES = 4;
+const Vertex SQUARE_VERTICES[4] = {{{-0.5, -0.5}, {0.5, 0.5, 0.0}},
+                                   {{0.5, -0.5}, {0.5, 0.0, 0.5}},
+                                   {{0.5, 0.5}, {0.0, 0.0, 0.5}},
+                                   {{-0.5, 0.5}, {0, 0.5, 0.0}}};
+
+const size_t NB_SQUARE_INDICES = 6;
+// vulkan is limited to uint16 or uint32
+uint16_t SQUARE_INDICES[6] = {0, 1, 2, 2, 3, 0};
 
 VkVertexInputBindingDescription get_binding_description() {
     VkVertexInputBindingDescription binding_description = {0};
@@ -163,8 +173,10 @@ struct SimpleVkApp {
     VkFence* in_flight;
 
     /* Buffers */
-    VkBuffer triangle_vertex_buffer;
-    VkDeviceMemory triangle_vertex_buffer_memory;
+    VkBuffer shape_vertex_buffer;
+    VkDeviceMemory shape_vertex_buffer_memory;
+    VkBuffer shape_index_buffer;
+    VkDeviceMemory shape_index_buffer_memory;
 
     VkCommandPool transfer_command_pool;
     VkCommandBuffer* transfer_command_buffers;
@@ -1102,28 +1114,54 @@ void copy_buffer(SimpleVkApp* app, VkBuffer src_buffer, VkBuffer dst_buffer, VkD
 
 void create_vertex_buffer(SimpleVkApp* app) {
 
-    VkDeviceSize triangle_buffer_size = sizeof(Vertex) * NB_TRIANGLE_VERTICES;
+    VkDeviceSize shape_buffer_size = sizeof(Vertex) * NB_SQUARE_VERTICES;
     uint32_t sharing_queues[2] = {app->queue_families_indices.graphics_family,
                                   app->queue_families_indices.transfer_family};
     // use a staging buffer, that will copy the data from CPU memory to inefficient GPU memory.
     VkBuffer staging_buffer = {0};
     VkDeviceMemory staging_memory = {0};
-    create_buffer(app, 1, NULL, &staging_buffer, triangle_buffer_size,
+    create_buffer(app, 1, NULL, &staging_buffer, shape_buffer_size,
                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_memory,
                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     void* data;
-    vkMapMemory(app->device, staging_memory, 0, triangle_buffer_size, 0, &data);
-    memcpy(data, triangle_vertices, (size_t)triangle_buffer_size);
+    vkMapMemory(app->device, staging_memory, 0, shape_buffer_size, 0, &data);
+    memcpy(data, SQUARE_VERTICES, (size_t)shape_buffer_size);
     vkUnmapMemory(app->device, staging_memory);
     // Since we went with a host coherent memory heap, we do not need to call cache sync operation
     // (vkFush/InvalidateMappedMemoryRanges)
 
     // the real buffer will live in device local memory, and a priori more efficient memory
-    create_buffer(app, 2, sharing_queues, &(app->triangle_vertex_buffer), triangle_buffer_size,
-                  VK_BUFFER_USAGE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                  &(app->triangle_vertex_buffer_memory), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    create_buffer(app, 2, sharing_queues, &(app->shape_vertex_buffer), shape_buffer_size,
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                  &(app->shape_vertex_buffer_memory), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-    copy_buffer(app, staging_buffer, app->triangle_vertex_buffer, triangle_buffer_size);
+    copy_buffer(app, staging_buffer, app->shape_vertex_buffer, shape_buffer_size);
+
+    vkDestroyBuffer(app->device, staging_buffer, NULL);
+    vkFreeMemory(app->device, staging_memory, NULL);
+}
+
+void create_index_buffer(SimpleVkApp* app) {
+
+    VkDeviceSize buffer_size = sizeof(SQUARE_INDICES[0]) * NB_SQUARE_INDICES;
+    uint32_t sharing_queues[2] = {app->queue_families_indices.graphics_family,
+                                  app->queue_families_indices.transfer_family};
+
+    VkBuffer staging_buffer = {0};
+    VkDeviceMemory staging_memory = {0};
+    create_buffer(app, 1, NULL, &staging_buffer, buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                  &staging_memory,
+                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    void* data;
+    vkMapMemory(app->device, staging_memory, 0, buffer_size, 0, &data);
+    memcpy(data, SQUARE_INDICES, (size_t)buffer_size);
+    vkUnmapMemory(app->device, staging_memory);
+
+    create_buffer(app, 2, sharing_queues, &(app->shape_index_buffer), buffer_size,
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                  &(app->shape_index_buffer_memory), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    copy_buffer(app, staging_buffer, app->shape_index_buffer, buffer_size);
 
     vkDestroyBuffer(app->device, staging_buffer, NULL);
     vkFreeMemory(app->device, staging_memory, NULL);
@@ -1204,9 +1242,10 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
     // Binds the pipeline
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, app->graphics_pipeline);
 
-    VkBuffer vertex_buffers[] = {app->triangle_vertex_buffer};
+    VkBuffer vertex_buffers[] = {app->shape_vertex_buffer};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, offsets);
+    vkCmdBindIndexBuffer(command_buffer, app->shape_index_buffer, 0, VK_INDEX_TYPE_UINT16);
 
     // Viewport and scissor state are dynamic, so we need to set them
     VkViewport viewport = {0};
@@ -1224,7 +1263,7 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
     /**/
-    vkCmdDraw(command_buffer, (uint32_t)NB_TRIANGLE_VERTICES, 1, 0, 0);
+    vkCmdDrawIndexed(command_buffer, (uint32_t)NB_SQUARE_INDICES, 1, 0, 0, 0);
 
     vkCmdEndRenderPass(command_buffer);
     if(vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
@@ -1390,6 +1429,7 @@ void init_vulkan(SimpleVkApp* app) {
     create_command_buffers(app);
 
     create_vertex_buffer(app);
+    create_index_buffer(app);
 
     create_synchronization_objects(app);
 }
@@ -1413,8 +1453,11 @@ void cleanup(SimpleVkApp* app) {
     cleanup_swapchain(app);
 
     // Buffers
-    vkDestroyBuffer(app->device, app->triangle_vertex_buffer, NULL);
-    vkFreeMemory(app->device, app->triangle_vertex_buffer_memory, NULL);
+    vkDestroyBuffer(app->device, app->shape_vertex_buffer, NULL);
+    vkFreeMemory(app->device, app->shape_vertex_buffer_memory, NULL);
+
+    vkDestroyBuffer(app->device, app->shape_index_buffer, NULL);
+    vkFreeMemory(app->device, app->shape_index_buffer_memory, NULL);
 
     // Sync objects
     for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
