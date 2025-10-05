@@ -32,8 +32,6 @@ const char* VALIDATION_LAYERS[NB_VALIDATION_LAYERS] = {"VK_LAYER_KHRONOS_validat
 const char* REQUIRED_DEVICE_EXTENSIONS[NB_REQUIRED_DEVICE_EXTENSIONS] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
-#define QUEUE_FAMILY_COUNT 2
-
 #define MAX_FRAMES_IN_FLIGHT 2
 
 #define NB_VERTEX_ATTRIBUTES 2
@@ -42,7 +40,7 @@ struct Vertex {
     vec3 color;
 } typedef Vertex;
 
-const size_t nb_triangle_vertices = 3;
+const size_t NB_TRIANGLE_VERTICES = 3;
 const Vertex triangle_vertices[3] = {
     {{0.0, -0.5}, {1.0, 0.0, 0.0}}, {{0.5, 0.5}, {0.0, 1.0, 0.0}}, {{-0.5, 0.5}, {0.0, 0.0, 1.0}}};
 
@@ -73,20 +71,26 @@ void get_attribute_description(
     output_attribute_descriptions[1] = color_attribute;
 }
 
+#define QUEUE_FAMILY_COUNT 3
+
 struct QueueFamilyIndices {
     uint32_t graphics_family;
     bool graphics_family_found;
 
     uint32_t present_family;
     bool present_family_found;
+
+    uint32_t transfer_family;
+    bool transfer_family_found;
 } typedef QueueFamilyIndices;
 
 void build_indices_set(QueueFamilyIndices indices, uint32_t* set_size,
                        uint32_t output[QUEUE_FAMILY_COUNT]) {
     *set_size = 0;
-    uint32_t all_indices[QUEUE_FAMILY_COUNT] = {indices.graphics_family, indices.present_family};
-    uint32_t indice_found[QUEUE_FAMILY_COUNT] = {indices.graphics_family_found,
-                                                 indices.present_family_found};
+    uint32_t all_indices[QUEUE_FAMILY_COUNT] = {indices.graphics_family, indices.present_family,
+                                                indices.transfer_family};
+    uint32_t indice_found[QUEUE_FAMILY_COUNT] = {
+indices.graphics_family_found, indices.present_family_found, indices.transfer_family_found};
     for(size_t i = 0; i < QUEUE_FAMILY_COUNT; i++) {
         bool not_in_set = true;
         if(indice_found[i]) {
@@ -106,7 +110,7 @@ void build_indices_set(QueueFamilyIndices indices, uint32_t* set_size,
 }
 
 bool is_queue_family_complete(QueueFamilyIndices q) {
-    return q.graphics_family_found && q.present_family_found;
+    return q.graphics_family_found && q.present_family_found && q.transfer_family_found;
 }
 
 struct SwapchainSupportDetails {
@@ -131,6 +135,8 @@ struct SimpleVkApp {
     VkDevice device;
     VkQueue graphics_queue;
     VkQueue present_queue;
+VkQueue transfer_queue;
+    QueueFamilyIndices queue_families_indices;
 
     VkSurfaceKHR surface;
 
@@ -144,13 +150,13 @@ struct SimpleVkApp {
     VkFramebuffer* swapchain_framebuffers;
 
     uint32_t current_frame;
-    /* Grapichs rendering pipeline */
+    /* Graphics rendering pipeline */
     VkRenderPass render_pass;
     VkPipelineLayout pipeline_layout;
     VkPipeline graphics_pipeline;
 
-    VkCommandPool command_pool;
-    VkCommandBuffer* command_buffers; // free'd with their pool
+    VkCommandPool graphics_command_pool;
+    VkCommandBuffer* graphics_command_buffers; // free'd with their pool
 
     /* Synchronization objects */
     VkSemaphore* image_available;
@@ -160,6 +166,9 @@ struct SimpleVkApp {
     /* Buffers */
     VkBuffer triangle_vertex_buffer;
     VkDeviceMemory triangle_vertex_buffer_memory;
+
+VkCommandPool transfer_command_pool;
+    VkCommandBuffer* transfer_command_buffers;
 
 } typedef SimpleVkApp;
 
@@ -173,17 +182,33 @@ QueueFamilyIndices find_queue_families(SimpleVkApp* app, VkPhysicalDevice device
 
     VkBool32 present_support;
     for(size_t i = 0; i < queue_family_count && !is_queue_family_complete(indices); i++) {
-        present_support = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, app->surface, &present_support);
-        if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
             indices.graphics_family = i;
             indices.graphics_family_found = true;
         }
+present_support = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, app->surface, &present_support);
         if(present_support) {
             indices.present_family = i;
             indices.present_family_found = true;
         }
+    
+        // try to look for a transfer-only queue
+        if((queue_families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+           !(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+           !(queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+            indices.transfer_family = i;
+            indices.transfer_family_found = true;
+        }
     }
+
+    if(!indices.transfer_family_found) {
+        // defaults to the graphic queue
+        printf("no transfer only queue found. Defaulting to graphics queue (if found)");
+        indices.transfer_family = indices.graphics_family;
+        indices.transfer_family_found = indices.graphics_family_found;
+    }
+
     return indices;
 }
 
@@ -510,8 +535,9 @@ void pick_physical_device(SimpleVkApp* app) {
     }
 }
 
-void make_logical_device(SimpleVkApp* app) {
+void create_logical_device(SimpleVkApp* app) {
     QueueFamilyIndices indices = find_queue_families(app, app->physical_device);
+app->queue_families_indices = indices;
     uint32_t unique_indices_count = 0;
     uint32_t indices_set[QUEUE_FAMILY_COUNT];
     build_indices_set(indices, &unique_indices_count, indices_set);
@@ -551,6 +577,7 @@ void make_logical_device(SimpleVkApp* app) {
 
     vkGetDeviceQueue(app->device, indices.graphics_family, 0, &(app->graphics_queue));
     vkGetDeviceQueue(app->device, indices.present_family, 0, &(app->present_queue));
+vkGetDeviceQueue(app->device, indices.transfer_family, 0, &(app->transfer_queue));
 }
 
 /* Window surface creation ***********/
@@ -1206,8 +1233,8 @@ void draw_frame(SimpleVkApp* app) {
     // reset fence only if work will actually be performed
     vkResetFences(app->device, 1, &(app->in_flight[inflight_frame]));
 
-    vkResetCommandBuffer(app->command_buffers[inflight_frame], 0);
-    record_command_buffer(app, app->command_buffers[inflight_frame], image_index);
+    vkResetCommandBuffer(app->graphics_command_buffers[inflight_frame], 0);
+    record_command_buffer(app, app->graphics_command_buffers[inflight_frame], image_index);
 
     /* Configure queue submission and synchronization */
     VkSubmitInfo submit_info = {0};
@@ -1222,7 +1249,7 @@ void draw_frame(SimpleVkApp* app) {
     // in theory it can start computing shaders before the image is available.
     // command buffers to submit
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &(app->command_buffers[inflight_frame]);
+    submit_info.pCommandBuffers = &(app->graphics_command_buffers[inflight_frame]);
     // Semaphore(s) to signal once the command buffer(s) have finished
     VkSemaphore signal_semaphores[] = {
         app->image_ready_present[image_index]}; // index semaphore on swapchain index
@@ -1268,7 +1295,7 @@ void init_vulkan(SimpleVkApp* app) {
     create_surface(app);
 
     pick_physical_device(app);
-    make_logical_device(app);
+    create_logical_device(app);
 
     create_swapchain(app);
     create_image_views(app);
@@ -1277,7 +1304,7 @@ void init_vulkan(SimpleVkApp* app) {
     create_graphics_pipeline(app);
     create_framebuffers(app);
 
-    create_command_pool(app);
+    create_command_pools(app);
     create_command_buffers(app);
 
     create_vertex_buffer(app);
@@ -1319,8 +1346,10 @@ void cleanup(SimpleVkApp* app) {
     }
     free(app->image_ready_present);
 
-    vkDestroyCommandPool(app->device, app->command_pool, NULL);
-    free(app->command_buffers);
+    vkDestroyCommandPool(app->device, app->graphics_command_pool, NULL);
+    free(app->graphics_command_buffers);
+    vkDestroyCommandPool(app->device, app->transfer_command_pool, NULL);
+    free(app->transfer_command_buffers);
 
     vkDestroyPipeline(app->device, app->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(app->device, app->pipeline_layout, NULL);
