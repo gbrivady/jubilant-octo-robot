@@ -1062,8 +1062,8 @@ void create_vertex_buffer(SimpleVkApp* app) {
     // (vkFush/InvalidateMappedMemoryRanges)
 }
 
-/* Command pool and buffers **********/
-void create_command_pool(SimpleVkApp* app) {
+/* Command pools and buffers **********/
+void create_command_pools(SimpleVkApp* app) {
     // should store that somewhere, I think I call it pretty (too) often
     QueueFamilyIndices indices = app->queue_families_indices;
     VkCommandPoolCreateInfo pool_info = {0};
@@ -1071,24 +1071,39 @@ void create_command_pool(SimpleVkApp* app) {
     pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool_info.queueFamilyIndex = indices.graphics_family;
 
-    if(vkCreateCommandPool(app->device, &pool_info, NULL, &(app->command_pool)) != VK_SUCCESS) {
-        printf("failed to create command pool \n");
+    if(vkCreateCommandPool(app->device, &pool_info, NULL, &(app->graphics_command_pool)) !=
+       VK_SUCCESS) {
+        printf("failed to create graphics command pool \n");
+    }
+
+    pool_info.queueFamilyIndex = indices.transfer_family;
+    if(vkCreateCommandPool(app->device, &pool_info, NULL, &(app->transfer_command_pool)) !=
+VK_SUCCESS) {
+        printf("failed to create graphics command pool \n");
     }
 }
 
 void create_command_buffers(SimpleVkApp* app) {
-    app->command_buffers = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkCommandBuffer));
+    app->graphics_command_buffers = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkCommandBuffer));
+    app->transfer_command_buffers = calloc(MAX_FRAMES_IN_FLIGHT, sizeof(VkCommandBuffer));
 
     VkCommandBufferAllocateInfo allocate_info = {0};
     allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocate_info.commandPool = app->command_pool;
-    // Primay: can be submitted to queue for execution
+        // Primay: can be submitted to queue for execution
     // Secondary: cannot, but can be call from primary ones
     allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocate_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
 
-    if(vkAllocateCommandBuffers(app->device, &allocate_info, app->command_buffers) != VK_SUCCESS) {
-        printf("failed to allocate command buffers\n");
+allocate_info.commandPool = app->graphics_command_pool;
+    if(vkAllocateCommandBuffers(app->device, &allocate_info, app->graphics_command_buffers) !=
+       VK_SUCCESS) {
+        printf("failed to allocate graphics command buffers\n");
+    }
+
+    allocate_info.commandPool = app->transfer_command_pool;
+    if(vkAllocateCommandBuffers(app->device, &allocate_info, app->transfer_command_buffers) !=
+VK_SUCCESS) {
+        printf("failed to allocate transfer command buffers\n");
     }
 }
 
