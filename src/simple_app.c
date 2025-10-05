@@ -619,7 +619,7 @@ void create_swapchain(SimpleVkApp* app) {
     create_info.imageArrayLayers = 1;                             // amount of layers per image
     create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; // what are the layers
 
-    QueueFamilyIndices indices = find_queue_families(app, app->physical_device);
+    QueueFamilyIndices indices = app->queue_families_indices;
     uint32_t queue_family_indices[QUEUE_FAMILY_COUNT] = {indices.graphics_family,
                                                          indices.present_family};
     if(indices.graphics_family != indices.present_family) {
@@ -1065,7 +1065,7 @@ void create_vertex_buffer(SimpleVkApp* app) {
 /* Command pool and buffers **********/
 void create_command_pool(SimpleVkApp* app) {
     // should store that somewhere, I think I call it pretty (too) often
-    QueueFamilyIndices indices = find_queue_families(app, app->physical_device);
+    QueueFamilyIndices indices = app->queue_families_indices;
     VkCommandPoolCreateInfo pool_info = {0};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
