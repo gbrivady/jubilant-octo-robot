@@ -1,4 +1,3 @@
-#include "cglm/types.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -90,7 +89,7 @@ void build_indices_set(QueueFamilyIndices indices, uint32_t* set_size,
     uint32_t all_indices[QUEUE_FAMILY_COUNT] = {indices.graphics_family, indices.present_family,
                                                 indices.transfer_family};
     uint32_t indice_found[QUEUE_FAMILY_COUNT] = {
-indices.graphics_family_found, indices.present_family_found, indices.transfer_family_found};
+        indices.graphics_family_found, indices.present_family_found, indices.transfer_family_found};
     for(size_t i = 0; i < QUEUE_FAMILY_COUNT; i++) {
         bool not_in_set = true;
         if(indice_found[i]) {
@@ -135,7 +134,7 @@ struct SimpleVkApp {
     VkDevice device;
     VkQueue graphics_queue;
     VkQueue present_queue;
-VkQueue transfer_queue;
+    VkQueue transfer_queue;
     QueueFamilyIndices queue_families_indices;
 
     VkSurfaceKHR surface;
@@ -167,7 +166,7 @@ VkQueue transfer_queue;
     VkBuffer triangle_vertex_buffer;
     VkDeviceMemory triangle_vertex_buffer_memory;
 
-VkCommandPool transfer_command_pool;
+    VkCommandPool transfer_command_pool;
     VkCommandBuffer* transfer_command_buffers;
 
 } typedef SimpleVkApp;
@@ -182,17 +181,17 @@ QueueFamilyIndices find_queue_families(SimpleVkApp* app, VkPhysicalDevice device
 
     VkBool32 present_support;
     for(size_t i = 0; i < queue_family_count && !is_queue_family_complete(indices); i++) {
-                if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+        if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
             indices.graphics_family = i;
             indices.graphics_family_found = true;
         }
-present_support = false;
+        present_support = false;
         vkGetPhysicalDeviceSurfaceSupportKHR(device, i, app->surface, &present_support);
         if(present_support) {
             indices.present_family = i;
             indices.present_family_found = true;
         }
-    
+
         // try to look for a transfer-only queue
         if((queue_families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
            !(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
@@ -537,7 +536,7 @@ void pick_physical_device(SimpleVkApp* app) {
 
 void create_logical_device(SimpleVkApp* app) {
     QueueFamilyIndices indices = find_queue_families(app, app->physical_device);
-app->queue_families_indices = indices;
+    app->queue_families_indices = indices;
     uint32_t unique_indices_count = 0;
     uint32_t indices_set[QUEUE_FAMILY_COUNT];
     build_indices_set(indices, &unique_indices_count, indices_set);
@@ -577,7 +576,7 @@ app->queue_families_indices = indices;
 
     vkGetDeviceQueue(app->device, indices.graphics_family, 0, &(app->graphics_queue));
     vkGetDeviceQueue(app->device, indices.present_family, 0, &(app->present_queue));
-vkGetDeviceQueue(app->device, indices.transfer_family, 0, &(app->transfer_queue));
+    vkGetDeviceQueue(app->device, indices.transfer_family, 0, &(app->transfer_queue));
 }
 
 /* Window surface creation ***********/
@@ -1019,21 +1018,30 @@ uint32_t find_memory_type(SimpleVkApp* app, uint32_t type_filter,
     return UINT32_MAX;
 }
 
-void create_vertex_buffer(SimpleVkApp* app) {
+void create_buffer(SimpleVkApp* app, uint32_t nb_sharing_queues, uint32_t sharing_queues[2],
+                   VkBuffer* buffer, VkDeviceSize size, VkBufferUsageFlags usage,
+                   VkDeviceMemory* buffer_memory, VkMemoryPropertyFlags properties) {
     VkBufferCreateInfo buffer_info = {0};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = sizeof(Vertex) * nb_triangle_vertices;
-    buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; // multiple purposes can be achieved wot
-    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;   // only used by the graphics queue
+    buffer_info.size = size;
+    buffer_info.usage = usage;
 
-    if(vkCreateBuffer(app->device, &buffer_info, NULL, &(app->triangle_vertex_buffer)) !=
-       VK_SUCCESS) {
-        printf("failed to create vertex buffer for triangle\n");
+    if(nb_sharing_queues > 1) {
+        buffer_info.sharingMode =
+            VK_SHARING_MODE_CONCURRENT; // shared btw transfer queue and another one
+        buffer_info.queueFamilyIndexCount = nb_sharing_queues;
+        buffer_info.pQueueFamilyIndices = sharing_queues;
+    } else {
+        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
+
+    if(vkCreateBuffer(app->device, &buffer_info, NULL, buffer) != VK_SUCCESS) {
+        printf("failed to create vertex buffer of size\n");
     }
 
     /* Store the size required, alignment, and memory fields suitable for the buffer */
     VkMemoryRequirements memory_requirements = {0};
-    vkGetBufferMemoryRequirements(app->device, app->triangle_vertex_buffer, &memory_requirements);
+    vkGetBufferMemoryRequirements(app->device, *buffer, &memory_requirements);
 
     VkMemoryAllocateInfo allocate_info = {0};
     allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -1044,22 +1052,81 @@ void create_vertex_buffer(SimpleVkApp* app) {
     - the cache sync operations between CPU and GPU are automatic (coherent). Normally, you have to
     tell the GPU when the CPU writes to memory, and inversly, to ensure there are no problems.
     */
-    allocate_info.memoryTypeIndex = find_memory_type(app, memory_requirements.memoryTypeBits,
-                                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    allocate_info.memoryTypeIndex =
+        find_memory_type(app, memory_requirements.memoryTypeBits, properties);
 
-    if(vkAllocateMemory(app->device, &allocate_info, NULL, &(app->triangle_vertex_buffer_memory))) {
-        printf("failed to allocate vertex buffer memory for triangle\n");
+    if(vkAllocateMemory(app->device, &allocate_info, NULL, buffer_memory)) {
+        printf("failed to allocate buffer memory\n");
     }
-    vkBindBufferMemory(app->device, app->triangle_vertex_buffer, app->triangle_vertex_buffer_memory,
-                       0);
+    vkBindBufferMemory(app->device, *buffer, *buffer_memory, 0);
+}
 
+void copy_buffer(SimpleVkApp* app, VkBuffer src_buffer, VkBuffer dst_buffer, VkDeviceSize size) {
+    VkCommandBufferAllocateInfo allocate_info = {0};
+    allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate_info.commandPool = app->transfer_command_pool;
+    allocate_info.commandBufferCount = 1;
+
+    VkCommandBuffer command_buffer = {0};
+    vkAllocateCommandBuffers(app->device, &allocate_info, &command_buffer);
+
+    VkCommandBufferBeginInfo begin_info = {0};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    // signals to the driver that we will use the command buffer ONCE and wait until its finished
+    // before leaving the function
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(command_buffer, &begin_info);
+
+    VkBufferCopy copy_region = {0};
+    copy_region.srcOffset = 0;
+    copy_region.dstOffset = 0;
+    copy_region.size = size;
+    vkCmdCopyBuffer(command_buffer, src_buffer, dst_buffer, 1, &copy_region);
+
+    vkEndCommandBuffer(command_buffer);
+
+    VkSubmitInfo submit_info = {0};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+
+    vkQueueSubmit(app->transfer_queue, 1, &submit_info, VK_NULL_HANDLE);
+    vkQueueWaitIdle(app->transfer_queue); // no fence, simply wait for the queue to finish
+    // to optimize, for example when we will have several buffers, it might be smarter to add a
+    // fence and wait for ALL buffers to finish copying
+
+    vkFreeCommandBuffers(app->device, app->transfer_command_pool, 1, &command_buffer);
+}
+
+void create_vertex_buffer(SimpleVkApp* app) {
+
+    VkDeviceSize triangle_buffer_size = sizeof(Vertex) * NB_TRIANGLE_VERTICES;
+    uint32_t sharing_queues[2] = {app->queue_families_indices.graphics_family,
+                                  app->queue_families_indices.transfer_family};
+    // use a staging buffer, that will copy the data from CPU memory to inefficient GPU memory.
+    VkBuffer staging_buffer = {0};
+    VkDeviceMemory staging_memory = {0};
+    create_buffer(app, 1, NULL, &staging_buffer, triangle_buffer_size,
+                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging_memory,
+                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     void* data;
-    vkMapMemory(app->device, app->triangle_vertex_buffer_memory, 0, buffer_info.size, 0, &data);
-    memcpy(data, triangle_vertices, (size_t)buffer_info.size);
-    vkUnmapMemory(app->device, app->triangle_vertex_buffer_memory);
+    vkMapMemory(app->device, staging_memory, 0, triangle_buffer_size, 0, &data);
+    memcpy(data, triangle_vertices, (size_t)triangle_buffer_size);
+    vkUnmapMemory(app->device, staging_memory);
     // Since we went with a host coherent memory heap, we do not need to call cache sync operation
     // (vkFush/InvalidateMappedMemoryRanges)
+
+    // the real buffer will live in device local memory, and a priori more efficient memory
+    create_buffer(app, 2, sharing_queues, &(app->triangle_vertex_buffer), triangle_buffer_size,
+                  VK_BUFFER_USAGE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                  &(app->triangle_vertex_buffer_memory), VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    copy_buffer(app, staging_buffer, app->triangle_vertex_buffer, triangle_buffer_size);
+
+    vkDestroyBuffer(app->device, staging_buffer, NULL);
+    vkFreeMemory(app->device, staging_memory, NULL);
 }
 
 /* Command pools and buffers **********/
@@ -1078,7 +1145,7 @@ void create_command_pools(SimpleVkApp* app) {
 
     pool_info.queueFamilyIndex = indices.transfer_family;
     if(vkCreateCommandPool(app->device, &pool_info, NULL, &(app->transfer_command_pool)) !=
-VK_SUCCESS) {
+       VK_SUCCESS) {
         printf("failed to create graphics command pool \n");
     }
 }
@@ -1089,12 +1156,12 @@ void create_command_buffers(SimpleVkApp* app) {
 
     VkCommandBufferAllocateInfo allocate_info = {0};
     allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        // Primay: can be submitted to queue for execution
+    // Primay: can be submitted to queue for execution
     // Secondary: cannot, but can be call from primary ones
     allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocate_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
 
-allocate_info.commandPool = app->graphics_command_pool;
+    allocate_info.commandPool = app->graphics_command_pool;
     if(vkAllocateCommandBuffers(app->device, &allocate_info, app->graphics_command_buffers) !=
        VK_SUCCESS) {
         printf("failed to allocate graphics command buffers\n");
@@ -1102,7 +1169,7 @@ allocate_info.commandPool = app->graphics_command_pool;
 
     allocate_info.commandPool = app->transfer_command_pool;
     if(vkAllocateCommandBuffers(app->device, &allocate_info, app->transfer_command_buffers) !=
-VK_SUCCESS) {
+       VK_SUCCESS) {
         printf("failed to allocate transfer command buffers\n");
     }
 }
@@ -1157,7 +1224,7 @@ void record_command_buffer(SimpleVkApp* app, VkCommandBuffer command_buffer, uin
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
     /**/
-    vkCmdDraw(command_buffer, (uint32_t)nb_triangle_vertices, 1, 0, 0);
+    vkCmdDraw(command_buffer, (uint32_t)NB_TRIANGLE_VERTICES, 1, 0, 0);
 
     vkCmdEndRenderPass(command_buffer);
     if(vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
