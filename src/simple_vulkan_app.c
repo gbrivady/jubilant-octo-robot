@@ -34,10 +34,10 @@ const char* REQUIRED_DEVICE_EXTENSIONS[NB_REQUIRED_DEVICE_EXTENSIONS] = {
 #define MAX_FRAMES_IN_FLIGHT 2
 
 #define NB_VERTEX_ATTRIBUTES 2
-struct Vertex {
+typedef struct {
     vec2 position;
     vec3 color;
-} typedef Vertex;
+} Vertex;
 
 const size_t NB_TRIANGLE_VERTICES = 3;
 const Vertex TRIANGLE_VERTICES[3] = {
@@ -82,7 +82,7 @@ void get_attribute_description(
 
 #define QUEUE_FAMILY_COUNT 3
 
-struct QueueFamilyIndices {
+typedef struct {
     uint32_t graphics_family;
     bool graphics_family_found;
 
@@ -91,7 +91,7 @@ struct QueueFamilyIndices {
 
     uint32_t transfer_family;
     bool transfer_family_found;
-} typedef QueueFamilyIndices;
+} QueueFamilyIndices;
 
 void build_indices_set(QueueFamilyIndices indices, uint32_t* set_size,
                        uint32_t output[QUEUE_FAMILY_COUNT]) {
@@ -122,7 +122,7 @@ bool is_queue_family_complete(QueueFamilyIndices q) {
     return q.graphics_family_found && q.present_family_found && q.transfer_family_found;
 }
 
-struct SwapchainSupportDetails {
+typedef struct {
     VkSurfaceCapabilitiesKHR capabilities;
 
     uint32_t format_count;
@@ -130,9 +130,9 @@ struct SwapchainSupportDetails {
 
     uint32_t present_mode_count;
     VkPresentModeKHR* present_modes;
-} typedef SwapchainSupportDetails;
+} SwapchainSupportDetails;
 
-struct SimpleVkApp {
+typedef struct {
     GLFWwindow* window;
     VkInstance instance;
     bool validation_layers_available;
@@ -181,7 +181,7 @@ struct SimpleVkApp {
     VkCommandPool transfer_command_pool;
     VkCommandBuffer* transfer_command_buffers;
 
-} typedef SimpleVkApp;
+} SimpleVkApp;
 
 QueueFamilyIndices find_queue_families(SimpleVkApp* app, VkPhysicalDevice device) {
     QueueFamilyIndices indices = {0};
