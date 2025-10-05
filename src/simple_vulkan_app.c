@@ -46,8 +46,8 @@ const Vertex TRIANGLE_VERTICES[3] = {
 const size_t NB_SQUARE_VERTICES = 4;
 const Vertex SQUARE_VERTICES[4] = {{{-0.5, -0.5}, {0.5, 0.5, 0.0}},
                                    {{0.5, -0.5}, {0.5, 0.0, 0.5}},
-                                   {{0.5, 0.5}, {0.0, 0.0, 0.5}},
-                                   {{-0.5, 0.5}, {0, 0.5, 0.0}}};
+                                   {{0.5, 0.5}, {0.0, 1.0, 0.5}},
+                                   {{-0.5, 0.5}, {1.0, 0.0, 0.0}}};
 
 const size_t NB_SQUARE_INDICES = 6;
 // vulkan is limited to uint16 or uint32
